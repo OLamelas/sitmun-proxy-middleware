@@ -270,13 +270,21 @@ public class HttpRequestExecutor implements RequestExecutor {
 
     log.debug("Built upstream request with {} query parameter names", queryParams.size());
 
-    return UriComponentsBuilder.newInstance()
+    String rebuiltUrl = UriComponentsBuilder.newInstance()
         .scheme(components.getScheme())
         .host(components.getHost())
         .port(components.getPort())
         .path(path)
         .queryParams(queryParams)
+        .build()
+        .encode()
         .toUriString();
+    int queryStart = rebuiltUrl.indexOf('?');
+    if (queryStart < 0) {
+      return rebuiltUrl;
+    }
+    return rebuiltUrl.substring(0, queryStart)
+        + rebuiltUrl.substring(queryStart).replace("+", "%2B");
   }
 
   public String describe() {

@@ -325,6 +325,20 @@ class HttpRequestExecutorTest {
   }
 
   @Test
+  @DisplayName("Should preserve encoded query parameters when merging parameters")
+  void shouldPreserveEncodedQueryParametersWhenMergingParameters() {
+    httpRequestExecutor = new HttpRequestExecutor("https://api.example.com", httpClient);
+    httpRequestExecutor.setUrl(
+        "https://api.example.com/wfs?outputFormat=application%2Fgml%2Bxml%3B%20version%3D3.2");
+    httpRequestExecutor.addParameter("service", "WFS");
+
+    assertThat(httpRequestExecutor.getUrl())
+        .contains("outputFormat=application%2Fgml%2Bxml%3B%20version%3D3.2")
+        .contains("service=WFS")
+        .doesNotContain("application%2Fgml%20xml");
+  }
+
+  @Test
   @DisplayName("Should ignore addParameter with blank key or null value")
   void shouldIgnoreInvalidAddParameter() {
     httpRequestExecutor = new HttpRequestExecutor("https://api.example.com", httpClient);
