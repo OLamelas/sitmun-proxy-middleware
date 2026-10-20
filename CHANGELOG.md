@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **WFS**: Upstream `Content-Type` values pass through unchanged, including GeoServer `text/xml; subtype=gml/2.1.2`. The proxy sets a different type only when it replaces the body, such as `application/problem+json`.
+- **WFS**: Upstream `Content-Type` values pass through unchanged, including GeoServer `text/xml; subtype=gml/2.1.2`. Spring reads the standards-compliant part (`text/xml`, plus any parameter it can parse), so the slash in `subtype` is not a 500. The proxy sets a different type only when it replaces the body, such as `application/problem+json`.
 
 ### Added
 
@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Build**: Spring Boot is 4.1.1 (`spring-boot-starter-webmvc` + `spring-boot-starter-restclient`).
+- **Build**: Gradle wrapper is 8.14.6.
+- **Build**: `setupGitHooks` is no longer a dependency of `build` (submodule-safe / opt-in via `./gradlew setupGitHooks`).
 - **HTTP**: OkHttp is 5.5.0. The unsafe client does not follow redirects itself. Each hop selects the client for the `Location` host.
 - **Service checks**: Transport text is capped at `exceptionTextMaxLength`.
 

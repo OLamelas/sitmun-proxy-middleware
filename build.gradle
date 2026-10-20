@@ -36,7 +36,8 @@ dependencies {
   }
 
   // Spring Boot Starters
-  implementation libs.spring.boot.starter.web
+  implementation libs.spring.boot.starter.webmvc
+  implementation libs.spring.boot.starter.restclient
   implementation 'org.springframework.boot:spring-boot-starter-validation'
   implementation libs.spring.boot.starter.jdbc
   implementation libs.spring.boot.starter.actuator
@@ -49,6 +50,7 @@ dependencies {
 
   // HTTP Client
   implementation libs.okhttp3
+  implementation libs.mime4j.core
   implementation 'org.sitmun:sitmun-proxy-contract:1.2.9'
 
   // URI Templates
@@ -66,6 +68,8 @@ dependencies {
   testImplementation(libs.spring.boot.starter.test) {
     exclude group: 'com.vaadin.external.google', module: 'android-json'
   }
+  testImplementation libs.spring.boot.starter.webmvc.test
+  testImplementation libs.spring.boot.starter.jdbc.test
 
   testImplementation libs.h2
 }
@@ -104,11 +108,28 @@ scmVersion {
 
 project.version = '1.2.9'
 
-// Git hooks setup
+def resolveGitHooksDir = {
+  def gitMarker = new File(project.rootDir, '.git')
+  if (gitMarker.isFile()) {
+    def text = gitMarker.getText('UTF-8').trim()
+    def prefix = 'gitdir:'
+    if (text.startsWith(prefix)) {
+      def path = text.substring(prefix.length()).trim()
+      def gitDir = new File(path)
+      if (!gitDir.isAbsolute()) {
+        gitDir = new File(project.rootDir, path)
+      }
+      return new File(gitDir, 'hooks')
+    }
+  }
+  new File(gitMarker, 'hooks')
+}
+
+// Git hooks setup (opt-in: ./gradlew setupGitHooks)
 tasks.register('setupGitHooks') {
   group = 'git hooks'
   description = 'Install Git hooks for commit message validation and pre-commit checks'
-  def hookDir = new File(project.rootDir, '.git/hooks')
+  def hookDir = resolveGitHooksDir()
   def commitMsgHook = new File(hookDir, 'commit-msg')
   def preCommitHook = new File(hookDir, 'pre-commit')
 
@@ -206,7 +227,7 @@ tasks.register('setupGitHooks') {
 tasks.register('removeGitHooks') {
   group = 'git hooks'
   description = 'Remove Git hooks'
-  def hookDir = new File(project.rootDir, '.git/hooks')
+  def hookDir = resolveGitHooksDir()
 
   doLast {
     ['pre-commit', 'commit-msg'].each { hookName ->
@@ -218,9 +239,4 @@ tasks.register('removeGitHooks') {
     }
     println "✅ Git hooks removed successfully!"
   }
-}
-
-// Make setupGitHooks available as a dependency for build
-tasks.named('build') {
-  dependsOn 'setupGitHooks'
 }
