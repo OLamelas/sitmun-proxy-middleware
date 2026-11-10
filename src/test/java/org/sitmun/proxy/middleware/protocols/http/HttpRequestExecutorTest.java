@@ -10,6 +10,10 @@ import static org.mockito.Mockito.when;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.net.URI;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
+import java.util.Arrays;
 import java.util.HashMap;
 import java.util.Map;
 import okhttp3.Request;
@@ -333,9 +337,27 @@ class HttpRequestExecutorTest {
     httpRequestExecutor.addParameter("service", "WFS");
 
     assertThat(httpRequestExecutor.getUrl())
+        // PR-P01 remains deferred: this active contract test must expose its double encoding.
         .contains("outputFormat=application%2Fgml%2Bxml%3B%20version%3D3.2")
         .contains("service=WFS")
         .doesNotContain("application%2Fgml%20xml");
+  }
+
+  @Test
+  void shouldDeliverEncodedOutputFormatAfterOneQueryDecoding() {
+    HttpRequestExecutor executor = new HttpRequestExecutor("https://example.test", httpClient);
+    executor.setUrl("https://example.test/wfs?outputFormat=application%2Fgml%2Bxml%3B%20version%3D3.2");
+    executor.addParameter("service", "WFS");
+
+    String value = Arrays.stream(URI.create(executor.getUrl()).getRawQuery().split("&"))
+        .filter(parameter -> parameter.startsWith("outputFormat="))
+        .map(parameter -> parameter.substring("outputFormat=".length()))
+        .findFirst().orElseThrow();
+    // Decode the produced query value exactly once, as the receiver would.
+    // Expected red until PR-P01 is fixed; do not decode repeatedly to hide it.
+    assertThat(URLDecoder.decode(value, StandardCharsets.UTF_8))
+        .isEqualTo("application/gml+xml; version=3.2");
+    assertThat(executor.getUrl()).contains("service=WFS");
   }
 
   @Test

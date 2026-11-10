@@ -89,6 +89,22 @@ class RequestConfigurationServiceTest {
     assertThat(result).isEqualTo(executorResponse);
   }
 
+  @ParameterizedTest
+  @CsvSource({"401", "403"})
+  void deniedWfsTransactionNeverCallsUpstream(int status) {
+    when(restTemplate.exchange(eq(CONFIG_URL), eq(HttpMethod.POST), any(HttpEntity.class), eq(ConfigProxyDto.class)))
+        .thenThrow(new HttpClientErrorException(HttpStatus.valueOf(status)));
+    String xml = "<w:Transaction xmlns:w='http://www.opengis.net/wfs'><w:Delete typeName='app:roads'/></w:Transaction>";
+    var result = requestConfigurationService.doRequest(1, 2, "WFS", 5, 8, "token", Map.of(), TEST_URL, xml);
+    assertThat(result.getStatusCode().value()).isEqualTo(status);
+    verifyNoInteractions(requestExecutorService);
+    ArgumentCaptor<HttpEntity> sent = ArgumentCaptor.forClass(HttpEntity.class);
+    verify(restTemplate).exchange(eq(CONFIG_URL), eq(HttpMethod.POST), sent.capture(), eq(ConfigProxyDto.class));
+    ConfigProxyRequestDto request = (ConfigProxyRequestDto) sent.getValue().getBody();
+    assertThat(request.getCartographyId()).isEqualTo(8);
+    assertThat(request.getRequestBody()).isEqualTo(xml);
+  }
+
   @Test
   @DisplayName("Should return gateway error when configuration response body is null")
   void shouldReturnGatewayErrorWhenConfigurationResponseBodyIsNull() {
