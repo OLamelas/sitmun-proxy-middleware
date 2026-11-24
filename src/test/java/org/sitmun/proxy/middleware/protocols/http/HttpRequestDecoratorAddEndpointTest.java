@@ -5,6 +5,7 @@ import static org.mockito.Mockito.when;
 
 import java.util.HashMap;
 import java.util.Map;
+import okhttp3.Request;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -160,7 +161,7 @@ class HttpRequestDecoratorAddEndpointTest {
   }
 
   @Test
-  @DisplayName("Should handle URI with special characters")
+  @DisplayName("Should preserve encoded query characters without double encoding")
   void shouldHandleUriWithSpecialCharacters() {
     // Given
     String uri = "https://api.example.com/search?query=test%20with%20spaces&filter=active";
@@ -174,9 +175,10 @@ class HttpRequestDecoratorAddEndpointTest {
     decorator.addBehavior(requestExecutor, httpContext);
 
     // Then
-    assertThat(requestExecutor.getUrl()).contains("query=test%2520with%2520spaces");
-    assertThat(requestExecutor.getUrl()).contains("filter=active");
-    assertThat(requestExecutor.getUrl()).contains("sort=name");
-    assertThat(requestExecutor.getUrl()).startsWith("https://api.example.com/search");
+    String result = requestExecutor.getUrl();
+    assertThat(result).isEqualTo(uri + "&sort=name");
+    // Assert the receiver's decoded value as well as the exact, once-encoded URL.
+    assertThat(new Request.Builder().url(result).build().url().queryParameter("query"))
+        .isEqualTo("test with spaces");
   }
 }

@@ -7,14 +7,19 @@ import static org.springframework.test.web.client.response.MockRestResponseCreat
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withSuccess;
 import static org.springframework.test.web.client.response.MockRestResponseCreators.withUnauthorizedRequest;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
+import java.util.Map;
+import java.util.concurrent.atomic.AtomicInteger;
 import org.hamcrest.Matchers;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.sitmun.proxy.middleware.dto.ConfigProxyDto;
+import org.sitmun.proxy.middleware.protocols.http.HttpClientFactoryService;
+import org.sitmun.proxy.middleware.protocols.wms.WmsPayloadDto;
 import org.sitmun.proxy.middleware.test.fixtures.AuthorizationProxyFixtures;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -44,6 +49,8 @@ class ProxyParameterizedJdbcIntegrationTest {
 
   @Autowired private ObjectMapper objectMapper;
 
+  @Autowired private HttpClientFactoryService httpClientFactoryService;
+
   @Value("${sitmun.backend.config.url}")
   private String configUrl;
 
@@ -59,7 +66,61 @@ class ProxyParameterizedJdbcIntegrationTest {
 
   @AfterEach
   void tearDown() {
+    httpClientFactoryService.removeAllInterceptors();
     mockBackend.verify();
+  }
+
+  @Test
+  void conflictingConfiguredQueryReturnsSafeProblemForGetAndPost() throws Exception {
+    var calls = new AtomicInteger();
+    httpClientFactoryService.addInterceptors(
+        chain -> {
+          calls.incrementAndGet();
+          throw new java.io.IOException("Unexpected upstream request");
+        });
+    var payload =
+        WmsPayloadDto.builder()
+            .method("GET")
+            .uri("https://private.example/wms?secret=old")
+            .parameters(Map.of("secret", "new", "REQUEST", "GetCapabilities"))
+            .build();
+    var config =
+        ConfigProxyDto.builder()
+            .type("WMS")
+            .exp(System.currentTimeMillis() + 3600000)
+            .payload(payload)
+            .build();
+    String json = objectMapper.writeValueAsString(config);
+    for (int i = 0; i < 2; i++) {
+      mockBackend.expect(requestTo(configUrl)).andRespond(withSuccess(json, MediaType.APPLICATION_JSON));
+    }
+
+    mvc.perform(get("/proxy/1/1/WMS/23"))
+        .andExpect(status().isBadGateway())
+        .andExpect(
+            MockMvcResultMatchers.content()
+                .contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+        .andExpect(
+            MockMvcResultMatchers.jsonPath("$.type")
+                .value("https://sitmun.org/problems/proxy-config-error"))
+        .andExpect(
+            MockMvcResultMatchers.jsonPath("$.detail")
+                .value("Configured query conflicts with request parameters"))
+        .andExpect(
+            MockMvcResultMatchers.content()
+                .string(Matchers.not(Matchers.containsString("secret"))))
+        .andExpect(
+            MockMvcResultMatchers.content()
+                .string(Matchers.not(Matchers.containsString("private.example"))));
+    mvc.perform(post("/proxy/1/1/WMS/23").contentType(MediaType.APPLICATION_XML).content("<xml/>"))
+        .andExpect(status().isBadGateway())
+        .andExpect(
+            MockMvcResultMatchers.content()
+                .contentTypeCompatibleWith(MediaType.APPLICATION_PROBLEM_JSON))
+        .andExpect(
+            MockMvcResultMatchers.jsonPath("$.type")
+                .value("https://sitmun.org/problems/proxy-config-error"));
+    org.assertj.core.api.Assertions.assertThat(calls.get()).isZero();
   }
 
   @Test

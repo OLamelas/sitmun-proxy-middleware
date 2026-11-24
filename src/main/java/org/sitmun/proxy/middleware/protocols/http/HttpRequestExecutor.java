@@ -5,15 +5,15 @@ import static org.sitmun.proxy.middleware.dto.ProxyProblemResponses.upstreamAuth
 import java.io.IOException;
 import java.io.InputStream;
 import java.net.URI;
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.time.Instant;
 import java.util.HashMap;
-import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.Executor;
 import java.util.concurrent.Executors;
 import java.util.function.Consumer;
-import java.util.function.Predicate;
 import lombok.Setter;
 import lombok.extern.slf4j.Slf4j;
 import okhttp3.MediaType;
@@ -28,8 +28,6 @@ import org.sitmun.proxy.middleware.service.RequestExecutorResponse;
 import org.sitmun.proxy.middleware.service.RequestExecutorResponseImpl;
 import org.sitmun.proxy.middleware.servicecheck.UpstreamExchange;
 import org.sitmun.proxy.middleware.utils.UriTemplateExpander;
-import org.springframework.util.LinkedMultiValueMap;
-import org.springframework.util.MultiValueMap;
 import org.springframework.util.StringUtils;
 import org.springframework.web.util.*;
 
@@ -115,7 +113,21 @@ public class HttpRequestExecutor implements RequestExecutor {
       throw new IllegalStateException("Url is not set");
     }
 
-    Request httpRequest = buildRequest();
+    Request httpRequest;
+    try {
+      httpRequest = buildRequest();
+    } catch (QueryConflictException e) {
+      ProblemDetail problem =
+          ProblemDetail.builder()
+              .type(ProblemTypes.PROXY_CONFIG_ERROR)
+              .status(502)
+              .title("Proxy Configuration Error")
+              .detail("Configured query conflicts with request parameters")
+              .instance("/proxy")
+              .properties(Map.of("origin", "backend-config"))
+              .build();
+      return new RequestExecutorResponseImpl<>(baseUrl, 502, "application/problem+json", problem);
+    }
 
     log.debug(
         "Executing upstream request: method={} headerNames={}",
@@ -189,7 +201,12 @@ public class HttpRequestExecutor implements RequestExecutor {
       throw new IllegalStateException("Url is not set");
     }
 
-    Request httpRequest = buildRequest();
+    Request httpRequest;
+    try {
+      httpRequest = buildRequest();
+    } catch (QueryConflictException e) {
+      throw new IOException("Configured query conflicts with request parameters");
+    }
     log.debug(
         "Executing streaming upstream request: method={} headerNames={}",
         httpRequest.method(),
@@ -230,62 +247,63 @@ public class HttpRequestExecutor implements RequestExecutor {
       return url;
     }
 
+    String expandedUrl = url;
+    Set<String> usedVariables = Set.of();
     if (UriTemplateExpander.hasTemplateVariables(url)) {
       UriTemplateExpander.ExpandedResult result =
           UriTemplateExpander.expandWithUsedVariables(url, parameters);
-      String expandedUrl = result.getUri();
+      expandedUrl = result.getUri();
+      usedVariables = result.getUsedVariables();
+    }
+    return mergeQuery(expandedUrl, usedVariables);
+  }
 
-      if (result.getUsedVariables().size() == parameters.size()) {
-        return expandedUrl;
+  private String mergeQuery(String expandedUrl, Set<String> usedVariables) {
+    int fragmentStart = expandedUrl.indexOf('#');
+    String fragment = fragmentStart >= 0 ? expandedUrl.substring(fragmentStart) : "";
+    String beforeFragment = fragmentStart >= 0 ? expandedUrl.substring(0, fragmentStart) : expandedUrl;
+    int queryStart = beforeFragment.indexOf('?');
+    String rawQuery = queryStart >= 0 ? beforeFragment.substring(queryStart + 1) : "";
+    StringBuilder additions = new StringBuilder();
+
+    for (Map.Entry<String, String> parameter : parameters.entrySet()) {
+      String key = parameter.getKey();
+      String value = parameter.getValue();
+      boolean found = false;
+      if (!rawQuery.isEmpty()) {
+        for (String component : rawQuery.split("&", -1)) {
+          int equals = component.indexOf('=');
+          String rawName = equals >= 0 ? component.substring(0, equals) : component;
+          if (!URLDecoder.decode(rawName, StandardCharsets.UTF_8).equals(key)) {
+            continue;
+          }
+          found = true;
+          if (equals < 0 || value == null
+              || !URLDecoder.decode(component.substring(equals + 1), StandardCharsets.UTF_8)
+                  .equals(value)) {
+            throw new QueryConflictException();
+          }
+        }
       }
-
-      UriComponents components = UriComponentsBuilder.fromUriString(expandedUrl).build();
-      return rebuildUrlWithMergedQueryParams(
-          components, k -> !result.getUsedVariables().contains(k));
+      if (!found && !usedVariables.contains(key)) {
+        if (value == null) {
+          throw new QueryConflictException();
+        }
+        if (!rawQuery.isEmpty() || additions.length() > 0) {
+          additions.append('&');
+        }
+        additions.append(UriUtils.encodeQueryParam(key, StandardCharsets.UTF_8).replace("+", "%2B"))
+            .append('=')
+            .append(UriUtils.encodeQueryParam(value, StandardCharsets.UTF_8).replace("+", "%2B"));
+      }
     }
-
-    UriComponents components = UriComponentsBuilder.fromUriString(url).build();
-    return rebuildUrlWithMergedQueryParams(components, k -> true);
+    if (additions.length() == 0) {
+      return expandedUrl;
+    }
+    return beforeFragment + (queryStart < 0 ? "?" : "") + additions + fragment;
   }
 
-  private String rebuildUrlWithMergedQueryParams(
-      UriComponents components, Predicate<String> includeParameterKey) {
-    MultiValueMap<String, String> queryParams =
-        new LinkedMultiValueMap<>(components.getQueryParams().size());
-
-    queryParams.putAll(components.getQueryParams());
-
-    parameters.forEach(
-        (k, v) -> {
-          if (!includeParameterKey.test(k)) {
-            return;
-          }
-          List<String> existingValues = queryParams.get(k);
-          if (existingValues == null || !existingValues.contains(v)) {
-            queryParams.add(k, v);
-          }
-        });
-
-    String path = components.getPath() != null ? components.getPath() : "";
-
-    log.debug("Built upstream request with {} query parameter names", queryParams.size());
-
-    String rebuiltUrl = UriComponentsBuilder.newInstance()
-        .scheme(components.getScheme())
-        .host(components.getHost())
-        .port(components.getPort())
-        .path(path)
-        .queryParams(queryParams)
-        .build()
-        .encode()
-        .toUriString();
-    int queryStart = rebuiltUrl.indexOf('?');
-    if (queryStart < 0) {
-      return rebuiltUrl;
-    }
-    return rebuiltUrl.substring(0, queryStart)
-        + rebuiltUrl.substring(queryStart).replace("+", "%2B");
-  }
+  private static final class QueryConflictException extends RuntimeException {}
 
   public String describe() {
     return "HttpRequest{"
