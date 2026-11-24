@@ -9,6 +9,7 @@ import static org.mockito.Mockito.when;
 
 import java.io.IOException;
 import java.net.URI;
+import java.net.InetSocketAddress;
 import java.net.URLDecoder;
 import java.nio.charset.StandardCharsets;
 import java.util.stream.Stream;
@@ -123,6 +124,33 @@ class HttpRequestExecutorQueryEncodingTest {
 
     assertThat(URI.create(result).getRawQuery()).isEqualTo(rawQuery + "&service=WFS");
     assertThat(request.url().queryParameterValues("outputFormat")).containsExactly(OUTPUT_FORMAT);
+  }
+
+  @Test
+  void sendsEncodedBasePlusUnchangedToAnActualReceiver() throws IOException {
+    var received = new java.util.concurrent.atomic.AtomicReference<String>();
+    var server = com.sun.net.httpserver.HttpServer.create(new InetSocketAddress("127.0.0.1", 0), 0);
+    server.createContext("/wfs", exchange -> {
+      received.set(exchange.getRequestURI().getRawQuery());
+      byte[] response = SCHEMA.getBytes(StandardCharsets.UTF_8);
+      exchange.sendResponseHeaders(200, response.length);
+      try (var body = exchange.getResponseBody()) { body.write(response); }
+    });
+    server.start();
+    try {
+      var client = new okhttp3.OkHttpClient();
+      var executor = new HttpRequestExecutor("http://proxy.test", request -> client.newCall(request).execute());
+      executor.setUrl("http://127.0.0.1:" + server.getAddress().getPort()
+          + "/wfs?outputFormat=application/gml%2Bxml");
+      executor.addParameter("outputFormat", "application/gml+xml");
+      executor.addParameter("request", "DescribeFeatureType");
+      assertThat(executor.execute().asResponseEntity().getStatusCode().value()).isEqualTo(200);
+      assertThat(received.get()).isEqualTo("outputFormat=application/gml%2Bxml&request=DescribeFeatureType");
+      assertThat(URLDecoder.decode(received.get().split("&")[0].split("=", 2)[1], StandardCharsets.UTF_8))
+          .isEqualTo("application/gml+xml");
+    } finally {
+      server.stop(0);
+    }
   }
 
   @Test
